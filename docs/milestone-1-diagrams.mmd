@@ -1,0 +1,62 @@
+# Milestone 1 — System Diagrams (Mermaid)
+
+## 1) Overall System Architecture
+
+```mermaid
+flowchart TB
+  U[User] --> R[React UI]
+  R --> SB[Spring Boot Backend]
+  SB --> SUB[Code Submission Module]
+  SB --> AI[AI Gateway]
+  SUB --> MP[Multi-Agent Pipeline]
+  MP --> A1[Code Analysis Agent]
+  MP --> A2[Security Agent]
+  MP --> A3[Remediation Agent]
+  MP --> A4[PR Summary Agent]
+  AI --> KB[RAG Knowledge Base]
+  KB --> O[Ollama (LLM)]
+  O --> REP[Review Report]
+```
+
+## 2) Agent Workflow
+
+```mermaid
+flowchart TD
+  S[Submitted Code] --> L[Language Detection + Syntax Checks]
+  L --> C[Code Smell Review]
+  C --> SEC[OWASP Mapping (SQLi/XSS/CSRF/Broken Access/Secrets)]
+  SEC --> REM[Remediation Agent (secure fixes)]
+  REM --> PR[PR Summary Agent (risk + changes)]
+  PR --> OUT[Final Review Report]
+```
+
+## 3) Data Flow
+
+```mermaid
+flowchart LR
+  P[Paste/Upload Code] --> V[Spring Boot Validation]
+  V --> STORE[Store source in uploads/]
+  STORE --> REQ[POST /api/review]
+  REQ --> FASTAPI[FastAPI AI Service]
+  FASTAPI --> RET[Retrieve relevant chunks]
+  RET --> RAGCTX[Context for LLM]
+  RAGCTX --> OLLAMA[Ollama generate]
+  OLLAMA --> RESP[AI review response]
+  RESP --> UI[React/Result page]
+```
+
+## 4) Knowledge Base / Vector Store Design
+
+```mermaid
+flowchart TD
+  D1[Docs: OWASP Top 10] --> CH[Chunking]
+  D2[Docs: Secure Coding] --> CH
+  D3[Docs: Java/Python Rules] --> CH
+  CH[Text chunks] --> EMB[Embeddings]
+  EMB --> VDB[(Vector DB / vector-store.json)]
+  Q[User question/code] --> RET[Retriever]
+  RET --> VDB
+  RET --> CTX[Top-k chunks]
+  CTX --> LLM[Ollama prompt]
+```
+

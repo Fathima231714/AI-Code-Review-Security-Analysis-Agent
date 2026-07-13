@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <title>AI Code Review</title>
+
+    <style>
+        body{
+            font-family:Arial;
+            background:#f2f2f2;
+            margin:0;
+        }
+
+        .container{
+            width:800px;
+            margin:60px auto;
+            background:white;
+            padding:40px;
+            border-radius:10px;
+            box-shadow:0px 0px 12px lightgray;
+            text-align:center;
+        }
+
+        h1{
+            color:#1976d2;
+        }
+
+        input[type=file]{
+            margin:18px 0;
+            font-size:18px;
+        }
+
+        button{
+            padding:12px 35px;
+            font-size:18px;
+            background:#1976d2;
+            color:white;
+            border:none;
+            border-radius:5px;
+            cursor:pointer;
+        }
+
+        textarea{
+            border:1px solid #d1d5db;
+            border-radius:8px;
+            padding:12px;
+            font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+
+        .row{
+            text-align:left;
+            margin-top:18px;
+        }
+
+        .hr{
+            margin:28px 0;
+            border:0;
+            border-top:1px solid #e5e7eb;
+        }
+    </style>
+</head>
+
+<body>
+<div class="container">
+
+<h1>AI Code Review & Security Analysis</h1>
+
+<h3>Upload or Paste Java / Python Source Code</h3>
+
+<!-- 1) Upload form -->
+<form action="/upload" method="post" enctype="multipart/form-data">
+    <div class="row">
+        <label><strong>Upload file:</strong></label>
+        <div style="margin-top:8px;">
+            <input type="file" name="codeFile" accept=".java,.py" required>
+        </div>
+    </div>
+
+    <div class="row" style="text-align:center;">
+        <button type="submit">Review Uploaded Code</button>
+    </div>
+</form>
+
+<hr class="hr"/>
+
+<!-- 2) Paste form -->
+<form id="pasteForm" onsubmit="return false;">
+    <div class="row">
+        <label><strong>Paste code:</strong></label>
+        <textarea id="pasteCode" rows="12" style="width:100%;margin-top:8px;" placeholder="Paste your Java or Python code here..."></textarea>
+    </div>
+
+    <div class="row">
+        <label><strong>Language (optional):</strong></label>
+        <select id="pasteLang" style="margin-left:10px;padding:8px;border:1px solid #d1d5db;border-radius:8px;">
+            <option value="">Auto-detect</option>
+            <option value="java">Java</option>
+            <option value="python">Python</option>
+        </select>
+    </div>
+
+    <div class="row" style="text-align:center;">
+        <button type="button" onclick="pasteAndReview()">Review Pasted Code</button>
+    </div>
+</form>
+
+</div>
+
+<script>
+    async function pasteAndReview() {
+        const code = document.getElementById('pasteCode').value || '';
+        const language = document.getElementById('pasteLang').value || '';
+        if (!code.trim()) {
+            alert('Please paste some code first.');
+            return;
+        }
+
+        // Validate/store via backend paste API
+        const pasteResp = await fetch('/api/submissions/paste', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code, language: language || undefined })
+        });
+
+        if (!pasteResp.ok) {
+            alert('Paste request failed.');
+            return;
+        }
+
+        const pasteData = await pasteResp.json();
+
+        // Call AI review
+        const reviewPayload = { code: pasteData.code, language: pasteData.language };
+        const reviewResp = await fetch('/api/review', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(reviewPayload)
+        });
+
+        if (!reviewResp.ok) {
+            alert('AI review failed.');
+            return;
+        }
+
+        const reviewData = await reviewResp.json();
+
+        const errors = pasteData.errors || [];
+        const validationHtml = (errors && errors.length)
+            ? "<h3>Validation Issues</h3><ul style=\"display:inline-block;text-align:left;\">" + errors.map(e => "<li>" + escapeHtml(e) + "</li>").join('') + "</ul>"
+            : '';
+
+
+
+
+        const ragMatches = reviewData.rag_matches || [];
+        const sources = ragMatches.map(m=>m.source).filter(Boolean);
+
+        // Render result page without nested template literals to avoid JS parsing issues
+        document.body.innerHTML = `
+            <div class="card">
+                <h1>AI Review Report</h1>
+                <p><strong>Language:</strong> ${escapeHtml(pasteData.language || 'unknown')}</p>
+                ${validationHtml}
+                <h3>AI Response</h3>
+                <pre>${escapeHtml(reviewData.response || '')}</pre>
+                <h3>Uploaded/Pasted Code</h3>
+                <pre>${escapeHtml(pasteData.code || '')}</pre>
+                <p style="color:#6b7280;font-size:14px;">RAG sources: ${escapeHtml(sources.length ? Array.from(new Set(sources)).join(', ') : 'none')}</p>
+                <br/>
+                <a href="/">Upload Another File / Paste Another Snippet</a>
+            </div>
+        `;
+        document.close();
+    }
+
+    function escapeHtml(str){
+        return (str||'').replace(/&/g,'&amp;').replace(/</g,'<').replace(/>/g,'>').replace(/"/g,'"').replace(/'/g,'&#039;');
+    }
+</script>
+</body>
+</html>
+

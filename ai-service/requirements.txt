@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+requests
+pydantic
+
+# Intended Milestone 1 RAG stack. Install these when internet access is available:
+# langchain
+# langchain-community
+# chromadb
+# sentence-transformers
