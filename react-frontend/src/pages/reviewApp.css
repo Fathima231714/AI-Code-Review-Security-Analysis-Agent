@@ -240,6 +240,20 @@ textarea {
   margin: 16px 18px 0;
 }
 
+.metrics { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; color: #526078; font-size: 13px; }
+.metrics span { border: 1px solid #d9dee8; border-radius: 999px; padding: 5px 9px; }
+.review-results { padding: 18px; display: grid; gap: 16px; }
+.summary-card, .assistant { border: 1px solid #d9dee8; border-radius: 8px; padding: 14px; background: #f8fafc; }
+.summary-card h3, .findings h3, .assistant h3 { margin: 0 0 8px; }
+.summary-card p { white-space: pre-wrap; margin: 0 0 10px; line-height: 1.5; }
+.llm-notes { color: #334155; font-size: 13px; }
+.severity-row, .export-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.severity, .export-row button, .assistant button { border: 1px solid #cfd6e3; border-radius: 6px; background: white; padding: 7px 9px; font-weight: 700; cursor: pointer; }
+.severity.selected { outline: 2px solid #172033; }.severity.critical { color:#b91c1c }.severity.high { color:#c2410c }.severity.medium { color:#a16207 }.severity.low { color:#1d4ed8 }
+.finding { border-left: 4px solid #64748b; border-radius: 6px; padding: 12px; margin-bottom: 10px; background: #fff; box-shadow: 0 1px 2px #d9dee855; }.finding.critical { border-color:#dc2626 }.finding.high { border-color:#ea580c }.finding.medium { border-color:#ca8a04 }.finding.low { border-color:#2563eb }
+.finding p { margin: 7px 0; line-height: 1.45; }.finding code { display: block; overflow:auto; background:#f1f5f9; padding:8px; white-space: pre-wrap; }.finding-id { color:#64748b; font-size:12px; margin-right:8px; }.line { float:right; color:#64748b; font-size:12px; }.finding small { color:#526078; }.fix { overflow:auto; background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; white-space:pre-wrap; }
+.chat-log { max-height: 260px; overflow: auto; display:grid; gap:8px; }.chat-message { padding:8px 10px; border-radius:6px; background:#fff; border:1px solid #d9dee8; }.chat-message.you { background:#eff6ff; }.chat-message p { margin:4px 0; white-space:pre-wrap; }.chat-message small { margin-right:6px; color:#526078; }.assistant form { display:flex; gap:8px; margin-top:10px; }.assistant form input { min-width:0; flex:1; padding:0 10px; }
+
 .messages,
 .risk-list {
   padding-left: 20px;

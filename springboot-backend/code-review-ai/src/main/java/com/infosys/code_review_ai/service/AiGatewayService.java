@@ -27,9 +27,14 @@ public class AiGatewayService {
 
     public Map<String, Object> review(AiReviewRequest request) {
         try {
+            Map<String, Object> payload = Map.of(
+                    "code", request.code() == null ? "" : request.code(),
+                    "language", request.language() == null ? "" : request.language(),
+                    "submission_id", request.submissionId() == null ? "" : request.submissionId());
             return restClient.post()
                     .uri("/review")
-                    .body(request)
+                    .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                    .body(payload)
                     .retrieve()
                     .body(MAP_RESPONSE);
         } catch (RestClientException ex) {
@@ -39,9 +44,13 @@ public class AiGatewayService {
 
     public Map<String, Object> ask(AiQuestionRequest request) {
         try {
+            Map<String, Object> payload = Map.of(
+                    "question", request.question() == null ? "" : request.question(),
+                    "review_id", request.reviewId() == null ? "" : request.reviewId());
             return restClient.post()
                     .uri("/ask")
-                    .body(request)
+                    .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                    .body(payload)
                     .retrieve()
                     .body(MAP_RESPONSE);
         } catch (RestClientException ex) {
@@ -57,6 +66,18 @@ public class AiGatewayService {
                     .body(MAP_RESPONSE);
         } catch (RestClientException ex) {
             return Map.of("query", query, "matches", List.of(), "error", "AI service is not reachable.");
+        }
+    }
+
+    public byte[] report(String type, Map<String, Object> reportRequest) {
+        try {
+            return restClient.post()
+                    .uri("/reports/" + type)
+                    .body(reportRequest)
+                    .retrieve()
+                    .body(byte[].class);
+        } catch (RestClientException ex) {
+            throw new IllegalStateException("AI report service is not reachable.", ex);
         }
     }
 

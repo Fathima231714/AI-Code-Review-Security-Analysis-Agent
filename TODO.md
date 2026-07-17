@@ -1,14 +1,46 @@
-# TODO - Milestone 1 GUI Update (Register/Login + Improved UI)
+# TODO — AI Code Review & Security Analysis Agent
 
-- [x] Add React Router structure (Protected Review page)
-- [x] Implement Register page (localStorage-based)
-- [x] Implement Login page (localStorage-based)
-- [x] Implement auth utilities (session token, current user)
-- [x] Refactor existing App.jsx to become ReviewApp (remove Milestone 1 scope/pipeline text)
-- [x] Add RequireAuth component
-- [x] Update App.css with auth + topbar styles
-- [x] Update react-frontend/package.json with react-router-dom
-- [x] Build frontend and validate flows
-  - [x] Register → Login → access Review page
-  - [x] Unauthenticated access redirects to /login
-  - [x] Code review submission still works (API calls unchanged)
+## Roadmap (per approved plan)
+
+### 1) FastAPI: multi-agent pipeline + structured JSON schema
+- [ ] Define response schema: code_quality, findings[], remediation[], pr_summary, rag_matches
+- [x] Implement Agents (function modules):
+  - [x] CodeAnalysisAgent
+  - [x] SecurityVulnerabilityAgent (OWASP mapping + severity scoring)
+  - [x] RemediationAgent (before/after + corrected code examples)
+  - [x] PRSummaryAgent (aggregated summary)
+- [ ] Update `POST /review` to return structured JSON (not only raw text)
+- [ ] Keep backward compatibility: still include `response` string field for UI
+
+### 2) FastAPI: LangChain + ChromaDB + SentenceTransformers
+- [ ] Replace custom vector-store fallback
+- [ ] Implement ingestion pipeline from `knowledge-base/*.md`
+- [ ] Use ChromaDB (persistent) + embeddings (SentenceTransformers)
+- [ ] Update retrieval used by agents and chat
+
+### 3) Conversational assistant (RAG Q&A)
+- [ ] Ensure `POST /ask` uses updated retrieval
+- [ ] Return citations/sources per response
+
+### 4) Report generation (HTML/PDF)
+- [ ] Add template-based HTML report endpoint
+- [ ] Add PDF generation endpoint
+- [ ] Return downloadable artifact info to Spring Boot
+
+### 5) Spring Boot: DTO updates + persistence (MySQL)
+- [ ] Update request/response models to store structured review results
+- [ ] Add MySQL schema + JPA entities
+- [ ] Persist submissions, findings, remediation, reports, chat messages
+- [ ] Add endpoints to download reports
+
+### 6) React: structured findings UI + assistant UI + export UI
+- [ ] Refactor `ReviewApp.jsx` to render findings cards with severity filters
+- [ ] Add “Remediation” section per finding with code blocks
+- [ ] Add “Export HTML/PDF” buttons
+- [ ] Add Chat Assistant component + chat history
+
+### 7) Integration & validation
+- [ ] Rebuild knowledge base / Chroma index
+- [ ] End-to-end test: paste/upload -> review -> chat -> export report
+- [ ] Performance checks + error handling hardening
+
