@@ -56,6 +56,16 @@ public class AiReviewController {
         return ResponseEntity.ok(aiGatewayService.search(q));
     }
 
+    @GetMapping(value = "/api/status", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, Object>> status() {
+        return ResponseEntity.ok(aiGatewayService.status());
+    }
+
+    @GetMapping(value = "/api/reviews/history", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, Object>> reviewHistory() {
+        return ResponseEntity.ok(Map.of("reviews", persistenceService.recentReviews()));
+    }
+
     @PostMapping(value = "/api/reports/{type}", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<byte[]> report(@org.springframework.web.bind.annotation.PathVariable String type,
                                          @RequestBody Map<String, Object> request) {

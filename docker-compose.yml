@@ -1,5 +1,6 @@
 services:
   mysql:
+    profiles: ["mysql"]
     image: mysql:8.4
     environment:
       MYSQL_DATABASE: code_review_ai
@@ -21,6 +22,8 @@ services:
       CHROMA_DIR: /workspace/chroma
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434/api/generate}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
     volumes:
       - ./knowledge-base:/workspace/knowledge-base:ro
       - chroma_data:/workspace/chroma
@@ -30,19 +33,22 @@ services:
   backend:
     build: ./springboot-backend/code-review-ai
     environment:
-      DB_URL: jdbc:mysql://mysql:3306/code_review_ai?createDatabaseIfNotExist=true&serverTimezone=UTC
-      DB_USERNAME: code_review
-      DB_PASSWORD: ${MYSQL_PASSWORD}
-      DB_DRIVER: com.mysql.cj.jdbc.Driver
+      # Use the application's embedded persistent database by default. This
+      # avoids a failed MySQL login preventing the whole review UI from
+      # starting. Enable the optional mysql profile only when external MySQL
+      # persistence is required.
+      DB_URL: jdbc:h2:file:/workspace/data/code-review;MODE=MySQL
+      DB_USERNAME: sa
+      DB_PASSWORD: ""
+      DB_DRIVER: org.h2.Driver
       AI_SERVICE_BASE_URL: http://ai-service:8000
       UPLOAD_DIR: /workspace/uploads
     depends_on:
-      mysql:
-        condition: service_healthy
       ai-service:
         condition: service_started
     volumes:
       - uploads_data:/workspace/uploads
+      - backend_data:/workspace/data
     ports:
       - "8080:8080"
 
@@ -57,3 +63,4 @@ volumes:
   mysql_data:
   chroma_data:
   uploads_data:
+  backend_data:

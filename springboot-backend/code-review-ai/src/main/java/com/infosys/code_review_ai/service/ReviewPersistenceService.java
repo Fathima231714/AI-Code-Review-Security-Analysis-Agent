@@ -10,6 +10,8 @@ import com.infosys.code_review_ai.repository.ChatMessageRepository;
 import com.infosys.code_review_ai.repository.ReviewRepository;
 import com.infosys.code_review_ai.repository.SubmissionRepository;
 import java.util.Map;
+import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 
@@ -24,4 +26,25 @@ public class ReviewPersistenceService {
         catch (JsonProcessingException ex) { throw new IllegalStateException("Unable to serialize review", ex); }
     }
     public void saveChat(String reviewId, String question, Map<String,Object> result) { chats.save(new ChatMessage(reviewId, question, String.valueOf(result.getOrDefault("answer", "")))); }
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> recentReviews() {
+        return reviews.findTop12ByOrderByCreatedAtDesc().stream().map(this::toHistoryItem).toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> toHistoryItem(Review review) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", review.getId());
+        item.put("fileName", review.getSubmission().getFileName());
+        item.put("language", review.getSubmission().getLanguage());
+        item.put("code", review.getSubmission().getSourceCode());
+        item.put("createdAt", review.getCreatedAt().toString());
+        try {
+            Map<String, Object> saved = objectMapper.readValue(review.getResultJson(), Map.class);
+            item.put("review", saved.getOrDefault("review", saved));
+        } catch (JsonProcessingException ex) {
+            item.put("error", "Saved review could not be read.");
+        }
+        return item;
+    }
 }

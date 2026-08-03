@@ -46,7 +46,9 @@ public class AiGatewayService {
         try {
             Map<String, Object> payload = Map.of(
                     "question", request.question() == null ? "" : request.question(),
-                    "review_id", request.reviewId() == null ? "" : request.reviewId());
+                    "review_id", request.reviewId() == null ? "" : request.reviewId(),
+                    "review_findings", request.reviewFindings() == null ? List.of() : request.reviewFindings(),
+                    "chat_history", request.chatHistory() == null ? List.of() : request.chatHistory());
             return restClient.post()
                     .uri("/ask")
                     .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
@@ -69,10 +71,22 @@ public class AiGatewayService {
         }
     }
 
+    public Map<String, Object> status() {
+        try {
+            return restClient.get()
+                    .uri("/")
+                    .retrieve()
+                    .body(MAP_RESPONSE);
+        } catch (RestClientException ex) {
+            return Map.of("status", "unavailable", "message", "AI service is not reachable.");
+        }
+    }
+
     public byte[] report(String type, Map<String, Object> reportRequest) {
         try {
             return restClient.post()
                     .uri("/reports/" + type)
+                    .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
                     .body(reportRequest)
                     .retrieve()
                     .body(byte[].class);

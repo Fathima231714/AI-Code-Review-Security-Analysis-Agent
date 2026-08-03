@@ -17,4 +17,7 @@ public class Submission {
     protected Submission() {}
     public Submission(String id, String fileName, String language, String sourceCode) { this.id=id; this.fileName=fileName; this.language=language; this.sourceCode=sourceCode; }
     public String getId() { return id; }
+    public String getFileName() { return fileName; }
+    public String getLanguage() { return language; }
+    public String getSourceCode() { return sourceCode; }
 }

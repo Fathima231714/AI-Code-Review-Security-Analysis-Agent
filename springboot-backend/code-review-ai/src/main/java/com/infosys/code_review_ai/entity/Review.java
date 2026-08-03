@@ -20,4 +20,7 @@ public class Review {
     protected Review() {}
     public Review(Submission submission, String resultJson) { this.submission=submission; this.resultJson=resultJson; }
     public String getId() { return id; }
+    public Submission getSubmission() { return submission; }
+    public String getResultJson() { return resultJson; }
+    public Instant getCreatedAt() { return createdAt; }
 }

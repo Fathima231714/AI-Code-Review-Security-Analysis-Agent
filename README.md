@@ -1,6 +1,6 @@
 # AI Code Review & Security Analysis Agent
 
-A full-stack developer portal for reviewing Java and Python source code. It combines a React interface, Spring Boot API, multi-agent FastAPI service, MySQL persistence, LangChain/ChromaDB RAG, SentenceTransformers embeddings, and Ollama Llama 3 (or an optional OpenAI-compatible gateway).
+A full-stack developer portal for reviewing Java and Python source code. It combines a React interface, Spring Boot API, multi-agent FastAPI service, MySQL persistence, LangChain/ChromaDB RAG, SentenceTransformers embeddings, and a Gemini or Ollama conversational assistant.
 
 ## Implemented modules
 
@@ -24,7 +24,7 @@ A full-stack developer portal for reviewing Java and Python source code. It comb
    notepad .env
    ```
 
-2. If using Ollama, prepare the model and keep Ollama running:
+2. Choose an LLM provider. For Gemini, set `GEMINI_API_KEY` in `.env` (and optionally `GEMINI_MODEL`). Otherwise, prepare Ollama and keep it running:
 
    ```powershell
    ollama pull llama3
@@ -39,7 +39,7 @@ A full-stack developer portal for reviewing Java and Python source code. It comb
 
 4. Open http://localhost:5173. The API is available at http://localhost:8080 and the AI service at http://localhost:8000.
 
-The platform still performs deterministic security and quality checks when Ollama is unavailable; only generated review notes and natural-language RAG answers require it.
+The platform still performs deterministic security and quality checks when no LLM is available; the chat assistant falls back to local secure-coding guidance. Gemini is used automatically when `GEMINI_API_KEY` is set, otherwise it uses Ollama.
 
 ## Run without Docker
 
@@ -54,5 +54,5 @@ cd react-frontend; npm install; npm run dev
 ## Notes
 
 - The RAG collection persists in ChromaDB. First startup downloads the SentenceTransformers embedding model.
-- Ollama is enabled with `OLLAMA_URL` and `OLLAMA_MODEL`. To use OpenAI instead, replace `call_ollama` in `ai-service/app.py` with the OpenAI LangChain chat client and set its API key as an environment variable; no key should be committed.
+- Gemini is enabled with `GEMINI_API_KEY` and `GEMINI_MODEL`; Ollama is configured with `OLLAMA_URL` and `OLLAMA_MODEL`. Never commit real API keys.
 - This project is an automated review aid, not a substitute for human security review or penetration testing.

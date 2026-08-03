@@ -33,6 +33,9 @@ class CodeRequest(BaseModel):
 class QuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=5_000)
     review_id: str | None = None
+    # The active review findings are supplied by the UI so questions such as
+    # "What is F-001?" can be answered from the actual submitted code review.
+    review_findings: list[dict] = Field(default_factory=list)
 
 
 class Finding(BaseModel):
@@ -67,7 +70,9 @@ class ReviewResult(BaseModel):
     findings: list[Finding]
     remediations: list[Remediation]
     pr_summary: str
+    pr_summary_data: dict[str, object] | None = None
     severity_breakdown: dict[str, int]
+    health_score: int
     rag_matches: list[SourceMatch]
     llm_notes: str | None = None
 
@@ -146,6 +151,37 @@ class KnowledgeBase:
 
 knowledge_base = KnowledgeBase()
 
+# Project-defined quality finding IDs. Keep these answers deterministic so the
+# conversational assistant never confuses an internal finding ID with an
+# external standard or document reference.
+QUALITY_FINDING_EXPLANATIONS = {
+    "Q-001": "Q-001 means an overly long line was detected (more than 140 characters). Long lines reduce readability and make code reviews harder. Extract expressions or wrap the statement into named variables.",
+    "Q-002": "Q-002 means elevated decision complexity was detected (more than eight branch keywords such as if, for, while, case, or catch). Split the logic into focused methods and add tests for edge cases.",
+    "Q-003": "Q-003 means an exception is silently ignored, such as an empty Java catch block or Python except: pass. Handle expected exceptions, log safely, and return a meaningful error.",
+    "Q-004": "Q-004 means God class / excessive responsibilities. The submission has more than eight methods or functions, which can make it difficult to change and test. Split cohesive responsibilities into smaller focused classes or modules with clear interfaces.",
+}
+
+OFFLINE_SECURITY_ANSWERS = {
+    "sql injection": "SQL injection occurs when untrusted input is joined into an SQL query, allowing an attacker to alter the query. Use prepared statements or parameterized queries and never concatenate user input into SQL text.",
+    "xss": "Cross-Site Scripting (XSS) occurs when untrusted data is treated as HTML or JavaScript in a browser. Use framework escaping and safe text APIs such as textContent instead of innerHTML for untrusted values.",
+    "cross site scripting": "Cross-Site Scripting (XSS) occurs when untrusted data is treated as HTML or JavaScript in a browser. Use framework escaping and safe text APIs such as textContent instead of innerHTML for untrusted values.",
+    "csrf": "CSRF tricks an authenticated browser into sending an unwanted request. Keep CSRF protection enabled for cookie-authenticated applications and validate anti-CSRF tokens.",
+    "hardcoded secret": "A hardcoded secret is a password, API key, token, or other credential stored in source code. Move it to a protected environment variable or secret manager, and rotate any exposed value.",
+    "broken access control": "Broken access control happens when a user can access an action or resource without proper authorization. Enforce server-side authorization checks for every protected endpoint and service operation.",
+}
+
+
+def offline_security_answer(question: str, matches: list[SourceMatch]) -> str:
+    """Provide useful, safe answers when a local Ollama model is unavailable."""
+    normalized = question.lower()
+    for term, answer in OFFLINE_SECURITY_ANSWERS.items():
+        if term in normalized:
+            return answer
+    if matches:
+        source = matches[0]
+        return f"Ollama is unavailable. Relevant guidance from {source.source}: {source.text[:700]}"
+    return "Ollama is unavailable. Ask about SQL injection, XSS, CSRF, hardcoded secrets, or broken access control, or start Ollama for a broader answer."
+
 
 def rebuild_knowledge_base() -> tuple[int, str]:
     return knowledge_base.rebuild()
@@ -197,13 +233,88 @@ def code_analysis_agent(code: str) -> list[Finding]:
     return results
 
 
-def pr_summary_agent(security: list[Finding], quality: list[Finding]) -> tuple[str, dict[str, int]]:
+def remediation_agent(security: list[Finding], quality: list[Finding]) -> list[Remediation]:
+    remediations: list[Remediation] = []
+    for finding in security + quality:
+        if finding.title == "SQL Injection":
+            after_code = "String sql = \"SELECT * FROM users WHERE name = ?\";\nPreparedStatement ps = connection.prepareStatement(sql);\nps.setString(1, username);"
+            explanation = "Prepared statements bind untrusted input separately from the SQL grammar, which prevents injection attacks."
+        elif finding.title == "Cross-Site Scripting (XSS)":
+            after_code = "element.textContent = userSuppliedValue;"
+            explanation = "Treat untrusted data as text instead of markup so the browser does not execute it."
+        elif finding.title == "CSRF Protection Disabled":
+            after_code = "http.csrf(csrf -> csrf.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()));"
+            explanation = "Keep CSRF protection enabled for browser-based workflows that rely on cookies."
+        elif finding.title == "Hardcoded Secret":
+            after_code = "String apiKey = System.getenv(\"API_KEY\");\nif (apiKey == null) throw new IllegalStateException(\"API_KEY is required\");"
+            explanation = "Move secrets to environment variables or a secret manager and rotate any value that is already exposed."
+        elif finding.title == "Possible Broken Access Control":
+            after_code = "@PreAuthorize(\"hasRole('ADMIN')\")\npublic ResponseEntity<?> adminOperation() { ... }"
+            explanation = "Guard privileged actions with server-side authorization checks rather than trusting UI-level roles."
+        elif finding.id == "Q-001" or finding.title == "Overly long line":
+            after_code = "String fullName = firstName + \" \" + lastName;\nString normalized = fullName.trim();"
+            explanation = "Split long expressions into smaller named values so the code is easier to read and review."
+        elif finding.id == "Q-002" or finding.title == "Elevated decision complexity":
+            after_code = "if (isReadyForReview(status)) {\n  submit();\n}"
+            explanation = "Extract branching logic into focused helper methods to reduce complexity and make testing simpler."
+        elif finding.id == "Q-003" or finding.title == "Exception silently ignored":
+            after_code = "try {\n  riskyOperation();\n} catch (Exception ex) {\n  logger.warn(\"riskyOperation failed\", ex);\n  throw new IllegalStateException(\"Unable to proceed\", ex);\n}"
+            explanation = "Handle failures explicitly, log them safely, and surface a clear error path."
+        elif finding.id == "Q-004" or finding.title == "God class / excessive responsibilities":
+            after_code = "class UserService {\n  private final UserRepository repository;\n  private final AuditTrail auditTrail;\n}\n"
+            explanation = "Split the submission into smaller classes or modules so each unit has a single cohesive responsibility."
+        else:
+            after_code = "// Apply the recommendation from the finding and add a focused regression test."
+            explanation = "Document the fix inline and cover it with a targeted test case."
+        remediations.append(Remediation(finding_id=finding.id, title=f"Fix: {finding.title}", explanation=explanation, before_code=finding.evidence[:300], after_code=after_code))
+    return remediations
+
+
+def build_pr_summary(security: list[Finding], quality: list[Finding]) -> dict[str, object]:
     all_findings = security + quality
     breakdown = {level: sum(f.severity == level for f in all_findings) for level in ["critical", "high", "medium", "low", "info"]}
     blocker = breakdown["critical"] + breakdown["high"]
-    summary = f"## AI Code Review Summary\n\nFound **{len(all_findings)}** issue(s): {breakdown['critical']} critical, {breakdown['high']} high, {breakdown['medium']} medium, and {breakdown['low']} low. "
-    summary += "Request changes before merge: resolve critical/high security findings and rotate any exposed credentials." if blocker else "No merge-blocking issue was detected by the automated checks; review the recommendations before merging."
-    return summary, breakdown
+
+    score = 100
+    score -= len(all_findings) * 8
+    score -= breakdown["critical"] * 18
+    score -= breakdown["high"] * 12
+    score -= breakdown["medium"] * 6
+    score -= breakdown["low"] * 3
+    health_score = max(0, min(100, score))
+
+    executive_overview = (
+        "Executive overview: The submission needs immediate attention because it contains critical or high severity findings that should be resolved before merge."
+        if blocker
+        else "Executive overview: The submission looks generally healthy. Address the lower-risk recommendations to improve maintainability and reduce future regressions."
+    )
+
+    prioritized_fixes = ["Prioritized fixes"]
+    if breakdown["critical"]:
+        prioritized_fixes.append("Resolve every critical finding first and rotate any exposed secrets immediately.")
+    if breakdown["high"]:
+        prioritized_fixes.append("Patch high severity security issues, especially injection, access control, and XSS paths.")
+    if any(item.id == "Q-003" for item in quality):
+        prioritized_fixes.append("Tighten error handling so failures are logged and surfaced instead of being silently ignored.")
+    if any(item.id == "Q-002" for item in quality):
+        prioritized_fixes.append("Reduce decision complexity by extracting helper methods and adding coverage for edge cases.")
+    if len(prioritized_fixes) == 1:
+        prioritized_fixes.append("Keep the current implementation and improve clarity with small follow-up refactors.")
+
+    summary_text = (
+        f"## AI Code Review Summary\n\n"
+        f"**Executive overview:** {executive_overview}\n\n"
+        f"Found **{len(all_findings)}** issue(s): {breakdown['critical']} critical, {breakdown['high']} high, {breakdown['medium']} medium, and {breakdown['low']} low.\n\n"
+        f"**Prioritized fixes:**\n- " + "\n- ".join(prioritized_fixes)
+    )
+
+    return {
+        "executive_overview": executive_overview,
+        "severity_breakdown": breakdown,
+        "prioritized_fixes": prioritized_fixes,
+        "health_score": health_score,
+        "summary_text": summary_text,
+    }
 
 
 def run_review(request: CodeRequest) -> ReviewResult:
@@ -212,12 +323,15 @@ def run_review(request: CodeRequest) -> ReviewResult:
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="review-agent") as executor:
         security_future = executor.submit(security_agent, request.code)
         quality_future = executor.submit(code_analysis_agent, request.code)
-        security, remediations = security_future.result()
+        security, _ = security_future.result()
         quality = quality_future.result()
-    summary, breakdown = pr_summary_agent(security, quality)
+    remediations = remediation_agent(security, quality)
+    summary_data = build_pr_summary(security, quality)
+    summary = str(summary_data["summary_text"])
+    breakdown = dict(summary_data["severity_breakdown"])
     context = "\n".join(f"[{m.source}] {m.text[:500]}" for m in matches)
     llm_notes = call_ollama(f"You are a concise senior secure-code reviewer. Based only on this secure-coding context and the findings, give two actionable review notes.\nContext:\n{context}\nFindings:\n{json.dumps([f.model_dump() for f in security + quality])}")
-    return ReviewResult(code_quality=quality, findings=security, remediations=remediations, pr_summary=summary, severity_breakdown=breakdown, rag_matches=matches, llm_notes=llm_notes)
+    return ReviewResult(code_quality=quality, findings=security, remediations=remediations, pr_summary=summary, pr_summary_data=summary_data, severity_breakdown=breakdown, health_score=int(summary_data["health_score"]), rag_matches=matches, llm_notes=llm_notes)
 
 
 def render_report(report: ReportRequest) -> str:
@@ -245,11 +359,57 @@ def search_knowledge(q: str):
 
 @app.post("/ask")
 def ask_knowledge(request: QuestionRequest):
+    # Finding IDs belong to this application, not the external knowledge base.
+    # Return their exact local meaning before performing RAG/LLM generation.
+    finding_id = re.search(r"\bQ-\d{3}\b", request.question.upper())
+    if finding_id:
+        identifier = finding_id.group(0)
+        if identifier in QUALITY_FINDING_EXPLANATIONS:
+            return {
+                "answer": QUALITY_FINDING_EXPLANATIONS[identifier],
+                "citations": [{"source": "ai-service/app.py", "id": identifier, "score": 1.0}],
+                "matches": [],
+            }
+        return {
+            "answer": f"{identifier} is not a code-quality finding ID defined in this project. Valid quality IDs are Q-001, Q-002, Q-003, and Q-004. Did you mean Q-004?",
+            "citations": [{"source": "ai-service/app.py", "id": identifier, "score": 1.0}],
+            "matches": [],
+        }
+    security_id = re.search(r"\bF-\d{3}\b", request.question.upper())
+    if security_id:
+        identifier = security_id.group(0)
+        finding = next((item for item in request.review_findings if str(item.get("id", "")).upper() == identifier), None)
+        if finding:
+            answer = (
+                f"{identifier} is {finding.get('title', 'a security finding')}. "
+                f"{finding.get('explanation', '')} "
+                f"Recommendation: {finding.get('recommendation', '')}"
+            ).strip()
+            return {
+                "answer": answer,
+                "citations": [{"source": "current code review", "id": identifier, "score": 1.0}],
+                "matches": [],
+            }
+        return {
+            "answer": f"{identifier} was not found in the current review. Ask this question after running a review, and use one of the F-IDs displayed in its Findings list.",
+            "citations": [],
+            "matches": [],
+        }
     matches = knowledge_base.search(request.question)
     context = "\n\n".join(f"Source: {m.source}\n{m.text}" for m in matches)
-    answer = call_ollama(f"You are a secure coding assistant. Answer only from this context, cite source filenames, and be concise.\n\n{context}\n\nQuestion: {request.question}")
+    history = "\n".join(
+        f"{entry.get('role', 'User')}: {entry.get('text', '')}" for entry in request.chat_history
+        if entry.get('text')
+    )
+    prompt = (
+        "You are a secure coding assistant. Answer only from this context, cite source filenames, and be concise."
+        + ("\n\nConversation history:\n" + history if history else "")
+        + "\n\nQuestion: "
+        + request.question
+    )
+    answer = call_ollama(prompt)
     if not answer:
-        answer = "Ollama is unavailable. Relevant secure-coding guidance is listed in the cited sources below."
+        answer = offline_security_answer(request.question, matches)
     return {"answer": answer, "citations": [{"source": m.source, "id": m.id, "score": m.score} for m in matches], "matches": [m.model_dump() for m in matches]}
 
 
