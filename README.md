@@ -17,33 +17,33 @@ A full-stack developer portal for reviewing Java and Python source code. It comb
 
 ## Run with Docker (recommended)
 
-1. Create the local environment file and put your MySQL password in it. The password is intentionally not stored in this repository.
+1. Create the local environment file and set strong MySQL passwords. Docker Compose starts a persistent MySQL 8 database automatically; you do not need to start the Windows MySQL service for this mode. The password is intentionally not stored in this repository.
 
    ```powershell
    Copy-Item .env.example .env
    notepad .env
    ```
 
-2. Choose an LLM provider. For Gemini, set `GEMINI_API_KEY` in `.env` (and optionally `GEMINI_MODEL`). Otherwise, prepare Ollama and keep it running:
+2. Choose the real chatbot provider. Set `GEMINI_API_KEY` in `.env` for broad natural-language answers, or run Ollama locally for an offline model. Without either provider the application remains usable, but the assistant is limited to its local secure-coding knowledge base.
 
    ```powershell
    ollama pull llama3
    ollama serve
    ```
 
-3. Start the platform:
+3. Start the platform (the first build can take several minutes because it downloads the RAG embedding model and Python packages):
 
    ```powershell
    docker compose up --build
    ```
 
-4. Open http://localhost:5173. The API is available at http://localhost:8080 and the AI service at http://localhost:8000.
+4. Open http://localhost:5173. The API is available at http://localhost:8080 and the AI service at http://localhost:8000. Docker keeps MySQL, uploaded files, and the Chroma index in named volumes across restarts.
 
-The platform still performs deterministic security and quality checks when no LLM is available; the chat assistant falls back to local secure-coding guidance. Gemini is used automatically when `GEMINI_API_KEY` is set, otherwise it uses Ollama.
+The application detects Java or Python from source syntax automatically, runs deterministic security and quality checks, and displays a severity dashboard and risk radar. The chat assistant uses the active findings, chat history, and retrieved secure-coding sources in every answer. Gemini is used automatically when `GEMINI_API_KEY` is set; otherwise it uses Ollama.
 
 ## Run without Docker
 
-Start MySQL, create database `code_review_ai`, then set `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD`. In three terminals run:
+Start MySQL, create database `code_review_ai`, then set `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, and `DB_DRIVER=com.mysql.cj.jdbc.Driver`. In three terminals run:
 
 ```powershell
 cd ai-service; python -m pip install -r requirements.txt; python build_knowledge_base.py; python -m uvicorn app:app --port 8000
@@ -56,3 +56,14 @@ cd react-frontend; npm install; npm run dev
 - The RAG collection persists in ChromaDB. First startup downloads the SentenceTransformers embedding model.
 - Gemini is enabled with `GEMINI_API_KEY` and `GEMINI_MODEL`; Ollama is configured with `OLLAMA_URL` and `OLLAMA_MODEL`. Never commit real API keys.
 - This project is an automated review aid, not a substitute for human security review or penetration testing.
+
+## Quick verification
+
+```powershell
+docker compose ps
+docker compose logs --tail 80 ai-service
+Invoke-WebRequest http://localhost:8000/ | Select-Object StatusCode, Content
+```
+
+All four services (`mysql`, `ai-service`, `backend`, and `frontend`) should be running before opening the dashboard.
+
