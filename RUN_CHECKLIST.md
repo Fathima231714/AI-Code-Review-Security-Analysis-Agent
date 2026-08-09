@@ -1,91 +1,44 @@
-# RUN_CHECKLIST
+# Run checklist
 
-## What this file contains
-Copy-paste checklist to verify the app actually started and key services are reachable.
+## Start
 
-
----
-
-## 1) Run all services
-From `e:/AI-CodeReview`:
+From `D:\AI-CodeReview`:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\start-all.ps1
+docker compose up --build -d
 ```
 
----
-
-## 2) Verify logs were created/updated
-Check that these files exist and have new timestamps:
-
-- `e:/AI-CodeReview/logs\ai-service.log`
-- `e:/AI-CodeReview/logs\springboot.log`
-
-Commands:
+The first AI-service build downloads ML/RAG packages and can take several minutes. Check progress with:
 
 ```powershell
-Get-ChildItem .\logs -Force | Sort-Object LastWriteTime -Descending | Select-Object Name,LastWriteTime,Length
-
-# Quick tail (PowerShell 5+):
-Get-Content .\logs\ai-service.log -Tail 80
-Get-Content .\logs\springboot.log -Tail 80
+Get-Content .\logs\docker-ai-build.log -Tail 50
 ```
 
----
-
-## 3) Verify backend is reachable
-```powershell
-powershell -Command "(Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8080' -Method GET).StatusCode"
-```
-
-
-If the UI is served by Spring Boot, you should get HTML (status 200) or a redirect.
-
----
-
-## 4) Verify ai-service is reachable
-Check the knowledge search endpoint shape (example query):
+## Verify
 
 ```powershell
-curl "http://127.0.0.1:8000/knowledge/search?q=sql%20injection"
+docker compose ps
+docker compose logs --tail 80 ai-service
+Invoke-WebRequest http://localhost:8000/ | Select-Object StatusCode, Content
+Invoke-WebRequest http://localhost:8080/ | Select-Object StatusCode
 ```
 
-If the endpoint returns JSON, the service is up.
+Expected services are `mysql`, `ai-service`, `backend`, and `frontend`. Open http://localhost:5173 once all are running.
 
----
+## Demonstration test
 
-## 5) If uploads are used: verify upload directory and file creation
-Spring config shows upload-dir:
+1. Register or sign in at the portal.
+2. Paste either a Java or Python sample. The language label should update automatically from the syntax.
+3. Select **Validate Code**, then **Run AI Review**.
+4. Confirm that findings, remediation snippets, severity cards, and the Security Radar appear.
+5. Ask the assistant about a finding, e.g. `Explain F-001 and give me a safe Java fix`.
+6. Download HTML or PDF report.
 
-- `app.upload-dir=D:/code-review/uploads`
-
-Check:
+## Stop
 
 ```powershell
-Get-ChildItem "D:/code-review/uploads" -Force | Sort-Object LastWriteTime -Descending | Select-Object -First 20
+docker compose down
 ```
 
-Then upload a file in the UI and re-check for a newly created file.
-
----
-
-## 6) Run-time review call smoke test (optional)
-If your UI uses a `/review` call, verify ai-service endpoint is responding:
-
-```powershell
-curl -X POST http://127.0.0.1:8000/review -H "Content-Type: application/json" -d "{}"
-```
-
-
-If `{}` isn’t valid for your schema, the response should be a 4xx with an error message—still proof the server is reachable.
-
-
----
-
-## Done condition
-All of the following are true:
-- both log files exist and show recent writes
-- `http://localhost:8080` responds
-- `http://127.0.0.1:8000` responds to the search endpoint
-- (if you tested upload) a file appears under `D:/code-review/uploads`
+This preserves MySQL, uploads, and the RAG index. To remove all persistent project data intentionally, run `docker compose down -v`.
 
