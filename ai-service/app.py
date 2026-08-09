@@ -19,6 +19,8 @@ KNOWLEDGE_DIR = Path(os.getenv("KB_DIR", str(ROOT / "knowledge-base"))).resolve(
 CHROMA_DIR = Path(os.getenv("CHROMA_DIR", str(ROOT / "knowledge-base" / "chroma"))).resolve()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
 app = FastAPI(title="AI Code Review & Security Analysis Service", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8080"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -36,6 +38,7 @@ class QuestionRequest(BaseModel):
     # The active review findings are supplied by the UI so questions such as
     # "What is F-001?" can be answered from the actual submitted code review.
     review_findings: list[dict] = Field(default_factory=list)
+    chat_history: list[dict[str, str]] = Field(default_factory=list, max_length=20)
 
 
 class Finding(BaseModel):
@@ -66,6 +69,7 @@ class SourceMatch(BaseModel):
 
 
 class ReviewResult(BaseModel):
+    detected_language: Literal["java", "python", "unknown"]
     code_quality: list[Finding]
     findings: list[Finding]
     remediations: list[Remediation]
@@ -87,13 +91,55 @@ def line_number(code: str, index: int) -> int:
     return code.count("\n", 0, index) + 1
 
 
+def detect_language(code: str, hint: str | None = None) -> Literal["java", "python", "unknown"]:
+    """Detect supported source language from syntax, never trusting a UI hint alone."""
+    text = code or ""
+    normalized_hint = (hint or "").strip().lower()
+    java_signals = len(re.findall(r"\b(package|import\s+java|public\s+(class|interface|static)|class|interface|extends|implements|System\.out\.println)\b", text))
+    python_signals = len(re.findall(r"(?m)^\s*(def|class|import|from)\s+|\b(self|None|True|False|print)\s*\(?", text))
+    if java_signals > python_signals and java_signals:
+        return "java"
+    if python_signals > java_signals and python_signals:
+        return "python"
+    if normalized_hint in {"java", "python"}:
+        return normalized_hint  # type: ignore[return-value]
+    return "unknown"
+
+
 def call_ollama(prompt: str) -> str | None:
     try:
         response = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0.2}}, timeout=90)
         response.raise_for_status()
         return response.json().get("response", "").strip() or None
-    except requests.RequestException:
+    except (requests.RequestException, ValueError, AttributeError):
         return None
+
+
+def call_gemini(prompt: str) -> str | None:
+    if not GEMINI_API_KEY:
+        return None
+    try:
+        response = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+            params={"key": GEMINI_API_KEY},
+            json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 700}},
+            timeout=35,
+        )
+        response.raise_for_status()
+        candidates = response.json().get("candidates", [])
+        parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+        return "".join(part.get("text", "") for part in parts).strip() or None
+    except (requests.RequestException, ValueError, AttributeError, IndexError, KeyError):
+        return None
+
+
+def call_llm(prompt: str, timeout: int = 35) -> str | None:
+    # When Gemini is explicitly configured, do not silently mask a bad key or
+    # unavailable model by switching providers. The caller will return useful
+    # local guidance and clearly identify the configuration issue.
+    if GEMINI_API_KEY:
+        return call_gemini(prompt)
+    return call_ollama(prompt)
 
 
 class KnowledgeBase:
@@ -179,8 +225,9 @@ def offline_security_answer(question: str, matches: list[SourceMatch]) -> str:
             return answer
     if matches:
         source = matches[0]
-        return f"Ollama is unavailable. Relevant guidance from {source.source}: {source.text[:700]}"
-    return "Ollama is unavailable. Ask about SQL injection, XSS, CSRF, hardcoded secrets, or broken access control, or start Ollama for a broader answer."
+        prefix = "Gemini did not respond. Verify GEMINI_API_KEY and GEMINI_MODEL." if GEMINI_API_KEY else "Ollama is unavailable."
+        return f"{prefix} Relevant guidance from {source.source}: {source.text[:700]}"
+    return "Gemini did not respond. Verify GEMINI_API_KEY and GEMINI_MODEL in .env, then rebuild the AI service." if GEMINI_API_KEY else "Ollama is unavailable. Ask about SQL injection, XSS, CSRF, hardcoded secrets, or broken access control, or start Ollama for a broader answer."
 
 
 def rebuild_knowledge_base() -> tuple[int, str]:
@@ -199,6 +246,11 @@ def security_agent(code: str) -> tuple[list[Finding], list[Remediation]]:
         (r"(?i)(innerHTML|document\.write)\s*=?.*", "Cross-Site Scripting (XSS)", "high", "A03:2021 Injection", "A DOM HTML sink is used directly.", "Use safe text APIs or framework escaping for untrusted values.", "element.textContent = userSuppliedValue;", "DOM write"),
         (r"(?i)csrf\s*\(?\s*(disable|false)", "CSRF Protection Disabled", "high", "A01:2021 Broken Access Control", "CSRF protection appears disabled.", "Keep CSRF protection enabled for cookie-authenticated browser requests.", "http.csrf(csrf -> csrf.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()));", "CSRF configuration"),
         (r"(?i)(password|api[_-]?key|secret|token)\s*=\s*['\"][^'\"]{4,}", "Hardcoded Secret", "high", "A02:2021 Cryptographic Failures", "A likely credential is embedded in source code.", "Move secrets to a managed secret store or protected environment variable and rotate the exposed value.", "String apiKey = System.getenv(\"API_KEY\");\nif (apiKey == null) throw new IllegalStateException(\"API_KEY is required\");", "secret assignment"),
+        (r"(?i)(runtime\.getruntime\(\)\.exec|processbuilder\(|os\.system\(|subprocess\.(call|run|popen)\().*?(\+|f['\"]|format\()", "OS Command Injection", "critical", "A03:2021 Injection", "A system command appears to be built from dynamic text.", "Do not invoke a shell with user input. Use an allow-list and pass fixed arguments as an array.", "subprocess.run([\"git\", \"status\"], check=True, shell=False)", "command execution"),
+        (r"(?i)(objectinputstream|pickle\.loads|yaml\.load\s*\()", "Unsafe Deserialization", "high", "A08:2021 Software and Data Integrity Failures", "Untrusted serialized data can execute unexpected code or create unsafe objects.", "Use safe data formats such as JSON and validate the expected schema before processing.", "data = json.loads(payload)\nvalidate_request(data)", "deserialization"),
+        (r"(?i)(md5|sha1)\s*\(", "Weak Cryptographic Hash", "medium", "A02:2021 Cryptographic Failures", "MD5 or SHA-1 is not suitable for passwords or integrity protection.", "Use Argon2, bcrypt, or PBKDF2 for passwords and SHA-256 or stronger for integrity checks.", "PasswordEncoder encoder = new BCryptPasswordEncoder();", "weak hash"),
+        (r"(?i)(requests\.(get|post)|urlopen|resttemplate\.(getforobject|postforentity)).*?(url|uri|endpoint)", "Potential Server-Side Request Forgery", "medium", "A10:2021 Server-Side Request Forgery", "A server-side request may use a caller-controlled URL.", "Validate URL schemes, resolve hostnames, and block private or link-local network ranges.", "URI uri = validatePublicHttpsUrl(userUrl);\nrestTemplate.getForObject(uri, String.class);", "outbound request"),
+        (r"(?i)(fileinputstream|files\.read|string\(.*read|open\().*?(path|file|filename)", "Potential Path Traversal", "medium", "A01:2021 Broken Access Control", "A file operation may use a path supplied outside the trusted application boundary.", "Normalize the path and verify it remains under an allow-listed base directory.", "Path resolved = uploadRoot.resolve(fileName).normalize();\nif (!resolved.startsWith(uploadRoot)) throw new SecurityException();", "file path"),
     ]
     for pattern, title, severity, owasp, explanation, recommendation, after, label in rules:
         match = re.search(pattern, code, re.DOTALL)
@@ -318,7 +370,8 @@ def build_pr_summary(security: list[Finding], quality: list[Finding]) -> dict[st
 
 
 def run_review(request: CodeRequest) -> ReviewResult:
-    matches = knowledge_base.search(f"{request.language or ''} OWASP secure coding SQL injection XSS access control {request.code}")
+    language = detect_language(request.code, request.language)
+    matches = knowledge_base.search(f"{language} OWASP secure coding SQL injection XSS access control {request.code}")
     # Independent agents run concurrently; their results are merged by the PR Summary Agent.
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="review-agent") as executor:
         security_future = executor.submit(security_agent, request.code)
@@ -330,20 +383,20 @@ def run_review(request: CodeRequest) -> ReviewResult:
     summary = str(summary_data["summary_text"])
     breakdown = dict(summary_data["severity_breakdown"])
     context = "\n".join(f"[{m.source}] {m.text[:500]}" for m in matches)
-    llm_notes = call_ollama(f"You are a concise senior secure-code reviewer. Based only on this secure-coding context and the findings, give two actionable review notes.\nContext:\n{context}\nFindings:\n{json.dumps([f.model_dump() for f in security + quality])}")
-    return ReviewResult(code_quality=quality, findings=security, remediations=remediations, pr_summary=summary, pr_summary_data=summary_data, severity_breakdown=breakdown, health_score=int(summary_data["health_score"]), rag_matches=matches, llm_notes=llm_notes)
+    llm_notes = call_llm(f"You are a concise senior secure-code reviewer. Based only on this secure-coding context and the findings, give two actionable review notes.\nContext:\n{context}\nFindings:\n{json.dumps([f.model_dump() for f in security + quality])}", timeout=12)
+    return ReviewResult(detected_language=language, code_quality=quality, findings=security, remediations=remediations, pr_summary=summary, pr_summary_data=summary_data, severity_breakdown=breakdown, health_score=int(summary_data["health_score"]), rag_matches=matches, llm_notes=llm_notes)
 
 
 def render_report(report: ReportRequest) -> str:
     review = report.review
-    rows = "".join(f"<tr><td>{f.severity.upper()}</td><td>{f.title}</td><td>{f.owasp or '—'}</td><td>{f.evidence}</td><td>{f.recommendation}</td></tr>" for f in review.findings + review.code_quality)
+    rows = "".join(f"<tr><td>{f.severity.upper()}</td><td>{f.title}</td><td>{f.owasp or 'â€”'}</td><td>{f.evidence}</td><td>{f.recommendation}</td></tr>" for f in review.findings + review.code_quality)
     fixes = "".join(f"<section><h3>{r.title}</h3><p>{r.explanation}</p><pre>{r.after_code}</pre></section>" for r in review.remediations)
-    return f"""<!doctype html><html><head><meta charset='utf-8'><title>Code Review Report</title><style>body{{font:15px Arial;margin:36px;color:#172033}}h1{{color:#1d4ed8}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccd5e1;padding:8px;text-align:left;vertical-align:top}}th{{background:#eaf1ff}}pre{{background:#0f172a;color:#e2e8f0;padding:12px;white-space:pre-wrap}}.meta{{color:#526078}}</style></head><body><h1>AI Code Review & Security Analysis</h1><p class='meta'>File: {report.file_name} · Language: {report.language}</p><h2>Pull Request Summary</h2><p>{review.pr_summary}</p><h2>Severity Breakdown</h2><p>{', '.join(f'{k}: {v}' for k,v in review.severity_breakdown.items())}</p><h2>Findings</h2><table><thead><tr><th>Severity</th><th>Finding</th><th>OWASP</th><th>Evidence</th><th>Recommendation</th></tr></thead><tbody>{rows or '<tr><td colspan=5>No findings</td></tr>'}</tbody></table><h2>Remediation Roadmap</h2>{fixes or '<p>No specific remediation generated.</p>'}</body></html>"""
+    return f"""<!doctype html><html><head><meta charset='utf-8'><title>Code Review Report</title><style>body{{font:15px Arial;margin:36px;color:#172033}}h1{{color:#1d4ed8}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccd5e1;padding:8px;text-align:left;vertical-align:top}}th{{background:#eaf1ff}}pre{{background:#0f172a;color:#e2e8f0;padding:12px;white-space:pre-wrap}}.meta{{color:#526078}}</style></head><body><h1>AI Code Review & Security Analysis</h1><p class='meta'>File: {report.file_name} Â· Language: {report.language}</p><h2>Pull Request Summary</h2><p>{review.pr_summary}</p><h2>Severity Breakdown</h2><p>{', '.join(f'{k}: {v}' for k,v in review.severity_breakdown.items())}</p><h2>Findings</h2><table><thead><tr><th>Severity</th><th>Finding</th><th>OWASP</th><th>Evidence</th><th>Recommendation</th></tr></thead><tbody>{rows or '<tr><td colspan=5>No findings</td></tr>'}</tbody></table><h2>Remediation Roadmap</h2>{fixes or '<p>No specific remediation generated.</p>'}</body></html>"""
 
 
 @app.get("/")
 def home():
-    return {"status": "running", "service": "AI Code Review", "rag_backend": "LangChain + ChromaDB" if knowledge_base.store else "offline JSON fallback", "ollama_model": OLLAMA_MODEL}
+    return {"status": "running", "service": "AI Code Review", "rag_backend": "LangChain + ChromaDB" if knowledge_base.store else "offline JSON fallback", "llm_provider": "gemini" if GEMINI_API_KEY else "ollama", "llm_model": GEMINI_MODEL if GEMINI_API_KEY else OLLAMA_MODEL}
 
 
 @app.post("/knowledge/rebuild")
@@ -395,19 +448,59 @@ def ask_knowledge(request: QuestionRequest):
             "citations": [],
             "matches": [],
         }
+    active_findings = request.review_findings[:12]
+    priority_terms = ("highest-priority", "highest priority", "review first", "before merge", "prioritize first")
+    if active_findings and any(term in request.question.lower() for term in priority_terms):
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        top = sorted(active_findings, key=lambda item: severity_order.get(str(item.get("severity", "info")).lower(), 5))[0]
+        identifier = top.get("id", "this finding")
+        answer = (
+            f"Address {identifier} â€” {top.get('title', 'the highest-risk finding')} â€” first. "
+            f"Its severity is {str(top.get('severity', 'unknown')).upper()}. "
+            f"Why it matters: {top.get('explanation', '')} "
+            f"Recommended next step: {top.get('recommendation', '')}"
+        ).strip()
+        return {"answer": answer, "citations": [{"source": "current code review", "id": identifier, "score": 1.0}], "matches": []}
     matches = knowledge_base.search(request.question)
+    # Definition questions are independent of the submitted program. Give a
+    # direct, stable explanation instead of forcing an unrelated F-ID into it.
+    question_lower = request.question.lower().strip()
+    definition_terms = ("what is", "what are", "define", "explain", "tell me about", "how does")
+    known_security_topic = any(term in question_lower for term in OFFLINE_SECURITY_ANSWERS)
+    if known_security_topic and question_lower.startswith(definition_terms):
+        return {
+            "answer": offline_security_answer(request.question, matches),
+            "citations": [{"source": m.source, "id": m.id, "score": m.score} for m in matches],
+            "matches": [m.model_dump() for m in matches],
+        }
     context = "\n\n".join(f"Source: {m.source}\n{m.text}" for m in matches)
+    # Keep compatibility with a running service image from before chat history
+    # was added. This also guarantees general questions never fail merely
+    # because optional conversation context is absent.
     history = "\n".join(
-        f"{entry.get('role', 'User')}: {entry.get('text', '')}" for entry in request.chat_history
+        f"{entry.get('role', 'User')}: {entry.get('text', '')}" for entry in getattr(request, "chat_history", [])
         if entry.get('text')
     )
+    review_terms = (
+        "my code", "this code", "our code", "this review", "finding",
+        "vulnerability in", "line ", "fix this", "fix the", "before merge",
+        "these issues", "these findings", "the issues", "the findings",
+        "test plan for", "test these", "for this review",
+    )
+    is_review_question = bool(active_findings) and any(term in question_lower for term in review_terms)
     prompt = (
-        "You are a secure coding assistant. Answer only from this context, cite source filenames, and be concise."
+        (
+            "You are a secure coding review assistant. Answer specifically about the submitted code and its active findings. Give practical, safe next steps."
+            if is_review_question else
+            "You are a helpful general-purpose AI assistant. Answer the user's question directly and accurately. Do not mention code reviews, findings, or vulnerabilities unless the user explicitly asks about their code or review. For security questions, give safe, defensive guidance."
+        )
+        + ("\n\nActive code review findings:\n" + json.dumps(active_findings, ensure_ascii=False) if is_review_question else "")
         + ("\n\nConversation history:\n" + history if history else "")
+        + "\n\nSecure-coding context:\n" + context
         + "\n\nQuestion: "
         + request.question
     )
-    answer = call_ollama(prompt)
+    answer = call_llm(prompt)
     if not answer:
         answer = offline_security_answer(request.question, matches)
     return {"answer": answer, "citations": [{"source": m.source, "id": m.id, "score": m.score} for m in matches], "matches": [m.model_dump() for m in matches]}
@@ -416,7 +509,7 @@ def ask_knowledge(request: QuestionRequest):
 @app.post("/review")
 def review_code(request: CodeRequest):
     review = run_review(request)
-    return {"review": review.model_dump(), "response": review.pr_summary, "rag_matches": [m.model_dump() for m in review.rag_matches]}
+    return {"review": review.model_dump(), "response": review.pr_summary, "detected_language": review.detected_language, "rag_matches": [m.model_dump() for m in review.rag_matches]}
 
 
 @app.post("/reports/html", response_class=HTMLResponse)
@@ -438,3 +531,4 @@ def pdf_report(request: ReportRequest):
         story += [Spacer(1, 8), Paragraph(f"{finding.severity.upper()}: {finding.title}", styles["Heading3"]), Paragraph(finding.explanation + " " + finding.recommendation, styles["BodyText"])]
     doc.build(story); output.seek(0)
     return StreamingResponse(output, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=code-review-report.pdf"})
+
