@@ -60,9 +60,20 @@ public class CodeSubmissionService {
         String fileName = request == null || request.fileName() == null || request.fileName().isBlank()
                 ? defaultFileName(request == null ? "" : request.language(), code)
                 : StringUtils.cleanPath(request.fileName());
-        String language = request != null && request.language() != null && !request.language().isBlank()
-                ? normalizeLanguage(request.language())
-                : detectLanguage(fileName, code);
+        // Source syntax wins over a dropdown value. This prevents a pasted
+        // Python snippet being reviewed as Java simply because the UI still
+        // held its previous selection.
+        String detectedLanguage = detectLanguage("", code);
+        String language = !"unknown".equals(detectedLanguage)
+                ? detectedLanguage
+                : (request != null && request.language() != null && !request.language().isBlank()
+                    ? normalizeLanguage(request.language())
+                    : detectLanguage(fileName, code));
+        if ("python".equals(language) && fileName.toLowerCase(Locale.ROOT).endsWith(".java")) {
+            fileName = fileName.substring(0, fileName.length() - 5) + ".py";
+        } else if ("java".equals(language) && fileName.toLowerCase(Locale.ROOT).endsWith(".py")) {
+            fileName = fileName.substring(0, fileName.length() - 3) + ".java";
+        }
         List<String> errors = validate(fileName, language, code);
         String submissionId = UUID.randomUUID().toString();
 
@@ -195,3 +206,4 @@ public class CodeSubmissionService {
         return risks;
     }
 }
+
